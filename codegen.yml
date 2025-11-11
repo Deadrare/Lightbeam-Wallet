@@ -1,0 +1,11 @@
+overwrite: true
+schema:
+  - "https://router-staging.deadrare.io/"
+documents:
+  - "src/**/mutations/**"
+  - "src/**/queries/**"
+generates:
+  src/gql-types.ts:
+    plugins:
+      - "typescript"
+
