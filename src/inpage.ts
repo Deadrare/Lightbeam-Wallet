@@ -80,6 +80,53 @@
             })
         }
 
+        async sendTransaction (to: string, amount: string, token?: string, network?: 'test' | 'main'): Promise<{
+            hash: string
+            success: boolean
+            error?: string
+        }> {
+            if (!to) {
+                throw new Error('Recipient address is required')
+            }
+
+            if (!amount) {
+                throw new Error('Amount is required')
+            }
+
+            return new Promise((resolve, reject) => {
+                const requestId = Math.random().toString(36)
+
+                window.postMessage(
+                    {
+                        type: 'KEETA_SEND_TRANSACTION_REQUEST',
+                        requestId,
+                        data: { to, amount, token, network }
+                    },
+                    '*'
+                )
+
+                const handleResponse = (event: MessageEvent) => {
+                    if (event.data.type === 'KEETA_SEND_TRANSACTION_RESPONSE' &&
+                        event.data.requestId === requestId) {
+                        window.removeEventListener('message', handleResponse)
+
+                        if (event.data.error) {
+                            reject(new Error(event.data.error))
+                        } else {
+                            resolve(event.data.result)
+                        }
+                    }
+                }
+
+                window.addEventListener('message', handleResponse)
+
+                setTimeout(() => {
+                    window.removeEventListener('message', handleResponse)
+                    reject(new Error('Transaction request timeout'))
+                }, 180000)
+            })
+        }
+
         async createOrders (ordersData: {
             orders: Array<{
                 firstTokenAddress: string
@@ -208,7 +255,7 @@
             })
         }
 
-        async recoverFromStorage (storageAddresses: string[]): Promise<{
+        async recoverFromStorage (storageAddresses: string[], network?: 'test' | 'main'): Promise<{
             success: boolean
             recovered: string[]
             failed: string[]
@@ -225,7 +272,7 @@
                     {
                         type: 'KEETA_RECOVER_FROM_STORAGE_REQUEST',
                         requestId,
-                        data: { storageAddresses }
+                        data: { storageAddresses, network }
                     },
                     '*'
                 )

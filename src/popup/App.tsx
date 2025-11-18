@@ -7,15 +7,17 @@ import { ApprovalScreen } from './ApprovalScreen'
 import { OrderApprovalScreen } from './OrderApprovalScreen'
 import { RecoveryApprovalScreen } from './RecoveryApprovalScreen'
 import { NetworkSwitchScreen } from './NetworkSwitchScreen'
+import { SendApprovalScreen } from './SendApprovalScreen'
 import { sendMessage } from '@/lib/messaging'
 import { MessageType, type WalletState } from '@/core/types'
 import { ThemeProvider } from '@/components/theme-provider'
 
 interface PendingApproval {
     requestId: string
-    type: 'connect' | 'transaction' | 'createOrders' | 'recoverFromStorage' | 'network-switch'
+    type: 'connect' | 'transaction' | 'createOrders' | 'recoverFromStorage' | 'network-switch' | 'sendTransaction'
     origin: string
     data?: any
+    network?: 'test' | 'main'
     currentNetwork?: 'test' | 'main'
     requestedNetwork?: 'test' | 'main'
 }
@@ -176,13 +178,59 @@ export const App: React.FC = () => {
                             <RecoveryApprovalScreen
                                 request={pendingApproval as any}
                                 onResponse={async (approved) => {
-                                    await chrome.storage.local.remove('pendingApproval')
-                                    setPendingApproval(null)
-                                    // Send response to background
+                                    const requestId = pendingApproval.requestId
+
+                                    if (!approved) {
+                                        // Clear pending approval on rejection
+                                        await chrome.storage.local.remove('pendingApproval')
+                                        setPendingApproval(null)
+
+                                        // Send rejection response
+                                        await chrome.runtime.sendMessage({
+                                            type: MessageType.APPROVAL_RESPONSE,
+                                            data: { requestId, approved: false }
+                                        })
+                                        return
+                                    }
+
+                                    // Don't clear pendingApproval yet - keep component mounted during processing
+
+                                    // Send approval response - this will trigger background script to process
                                     await chrome.runtime.sendMessage({
                                         type: MessageType.APPROVAL_RESPONSE,
-                                        data: { requestId: pendingApproval.requestId, approved }
+                                        data: { requestId, approved: true }
                                     })
+
+                                    // Wait for the background script to complete by polling storage
+                                    // The background script stores the result when done
+                                    const maxWaitTime = 120000 // 2 minutes max
+                                    const pollInterval = 500 // Check every 500ms
+                                    const startTime = Date.now()
+
+                                    while (Date.now() - startTime < maxWaitTime) {
+                                        const result = await chrome.storage.local.get(`recovery_result_${requestId}`)
+                                        if (result[`recovery_result_${requestId}`]) {
+                                            // Clean up both result and progress
+                                            await chrome.storage.local.remove(`recovery_result_${requestId}`)
+                                            await chrome.storage.local.remove(`recovery_progress_${requestId}`)
+
+                                            const recoveryResult = result[`recovery_result_${requestId}`]
+                                            if (!recoveryResult.success) {
+                                                throw new Error(recoveryResult.error || 'Recovery failed')
+                                            }
+
+                                            // Only clear pending approval after successful completion
+                                            await chrome.storage.local.remove('pendingApproval')
+                                            setPendingApproval(null)
+
+                                            return // Success!
+                                        }
+
+                                        // Wait before polling again
+                                        await new Promise(resolve => setTimeout(resolve, pollInterval))
+                                    }
+
+                                    throw new Error('Recovery timeout')
                                 }}
                             />
                         )
@@ -201,20 +249,48 @@ export const App: React.FC = () => {
                                     }}
                                 />
                             )
-                            : (
-                                <ApprovalScreen
-                                    request={pendingApproval as any}
-                                    onResponse={async (approved) => {
-                                        await chrome.storage.local.remove('pendingApproval')
-                                        setPendingApproval(null)
-                                        // Send response to background
-                                        await chrome.runtime.sendMessage({
-                                            type: MessageType.APPROVAL_RESPONSE,
-                                            data: { requestId: pendingApproval.requestId, approved }
-                                        })
-                                    }}
-                                />
-                            )}
+                            : pendingApproval.type === 'sendTransaction'
+                                ? (
+                                    <SendApprovalScreen
+                                        to={pendingApproval.data.to}
+                                        amount={pendingApproval.data.amount}
+                                        token={pendingApproval.data.token}
+                                        origin={pendingApproval.origin}
+                                        network={pendingApproval.network || 'test'}
+                                        onApprove={async () => {
+                                            await chrome.storage.local.remove('pendingApproval')
+                                            setPendingApproval(null)
+                                            // Send approval response
+                                            await chrome.runtime.sendMessage({
+                                                type: MessageType.APPROVAL_RESPONSE,
+                                                data: { requestId: pendingApproval.requestId, approved: true }
+                                            })
+                                        }}
+                                        onReject={async () => {
+                                            await chrome.storage.local.remove('pendingApproval')
+                                            setPendingApproval(null)
+                                            // Send rejection response
+                                            await chrome.runtime.sendMessage({
+                                                type: MessageType.APPROVAL_RESPONSE,
+                                                data: { requestId: pendingApproval.requestId, approved: false }
+                                            })
+                                        }}
+                                    />
+                                )
+                                : (
+                                    <ApprovalScreen
+                                        request={pendingApproval as any}
+                                        onResponse={async (approved) => {
+                                            await chrome.storage.local.remove('pendingApproval')
+                                            setPendingApproval(null)
+                                            // Send response to background
+                                            await chrome.runtime.sendMessage({
+                                                type: MessageType.APPROVAL_RESPONSE,
+                                                data: { requestId: pendingApproval.requestId, approved }
+                                            })
+                                        }}
+                                    />
+                                )}
             </ThemeProvider>
         )
     }

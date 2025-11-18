@@ -29,6 +29,10 @@ window.addEventListener('message', async (event) => {
             handleGetAccounts(requestId)
             break
 
+        case 'KEETA_SEND_TRANSACTION_REQUEST':
+            handleSendTransaction(requestId, data)
+            break
+
         case 'KEETA_CREATE_ORDERS_REQUEST':
             handleCreateOrders(requestId, data)
             break
@@ -114,6 +118,34 @@ async function handleGetAccounts (requestId: string) {
             type: 'KEETA_GET_ACCOUNTS_RESPONSE',
             requestId,
             error: error.message || 'Failed to get accounts'
+        }, '*')
+    }
+}
+
+/**
+ * Handle send transaction request
+ */
+async function handleSendTransaction (requestId: string, txData: { to: string; amount: string; token?: string }) {
+    try {
+        const response = await chrome.runtime.sendMessage({
+            type: MessageType.SEND_TRANSACTION_DAPP,
+            data: txData
+        })
+
+        if (response.success) {
+            window.postMessage({
+                type: 'KEETA_SEND_TRANSACTION_RESPONSE',
+                requestId,
+                result: response.data
+            }, '*')
+        } else {
+            throw new Error(response.error || 'Send transaction failed')
+        }
+    } catch (error: any) {
+        window.postMessage({
+            type: 'KEETA_SEND_TRANSACTION_RESPONSE',
+            requestId,
+            error: error.message || 'Send transaction failed'
         }, '*')
     }
 }

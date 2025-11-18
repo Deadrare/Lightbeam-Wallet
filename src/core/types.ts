@@ -28,6 +28,7 @@ export enum MessageType {
     CONNECT_DAPP = 'CONNECT_DAPP',
     GET_ACCOUNTS = 'GET_ACCOUNTS',
     SIGN_TRANSACTION = 'SIGN_TRANSACTION',
+    SEND_TRANSACTION_DAPP = 'SEND_TRANSACTION_DAPP', // Send transaction from dApp
     APPROVAL_RESPONSE = 'APPROVAL_RESPONSE',
 
     // Order book operations

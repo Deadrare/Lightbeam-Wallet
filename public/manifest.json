@@ -1,7 +1,7 @@
 {
     "manifest_version": 3,
     "name": "Lightbeam Wallet",
-    "version": "1.0.0",
+    "version": "1.0.2",
     "description": "Your trusted companion for DeFi on Keeta Network. Manage assets, trade tokens, and explore dApps with ease.",
     "icons": {
         "16": "icons/icon16.png",

@@ -9,7 +9,7 @@ import { checkAndExtendOrders } from './orders/checkAndExtendOrders'
 import { createOrders } from './orders/createOrders'
 import { recoverFromStorageAccounts } from './orders/recoverFromStorageAccounts'
 import { refillStoragePool, getStoragePoolSize } from './orders/storagePool'
-import { config } from './config'
+import { config, StagingConfig, ProductionConfig } from './config'
 
 if (typeof window === 'undefined') {
     (globalThis as any).window = globalThis;
@@ -136,6 +136,70 @@ const pendingApprovals = new Map<string, {
     reject: (error: Error) => void
 }>()
 
+/**
+ * Helper function to check and handle network switching if needed
+ * Returns true if network switch was approved or not needed, false if rejected
+ */
+async function ensureCorrectNetwork (
+    requestedNetwork: 'test' | 'main' | undefined,
+    origin: string
+): Promise<boolean> {
+    // Get current network from storage
+    const currentNetwork = await WalletManager.getNetwork()
+
+    // If dApp requested a specific network and it doesn't match, ask user to switch
+    if (requestedNetwork && requestedNetwork !== currentNetwork) {
+        const requestId = Math.random().toString(36)
+        const networkSwitchRequest = {
+            type: 'network-switch' as const,
+            origin,
+            requestId,
+            data: {
+                currentNetwork,
+                requestedNetwork
+            }
+        }
+
+        // Store in chrome.storage so popup can access it
+        await chrome.storage.local.set({ pendingApproval: networkSwitchRequest })
+
+        // Open the extension popup
+        await chrome.action.openPopup().catch(() => {
+            console.log('Popup already open or could not be opened')
+        })
+
+        // Wait for user approval
+        try {
+            const approved = await new Promise<{ approved: boolean }>((resolve, reject) => {
+                pendingApprovals.set(requestId, { resolve, reject })
+
+                // Timeout after 5 minutes
+                setTimeout(() => {
+                    if (pendingApprovals.has(requestId)) {
+                        pendingApprovals.delete(requestId)
+                        chrome.storage.local.remove('pendingApproval')
+                        reject(new Error('Network switch request timed out'))
+                    }
+                }, 300000)
+            })
+
+            if (!approved.approved) {
+                return false
+            }
+
+            // User approved - switch network
+            await WalletManager.setNetwork(requestedNetwork)
+            return true
+        } catch (error) {
+            console.error('Network switch failed:', error)
+            return false
+        }
+    }
+
+    // No network switch needed
+    return true
+}
+
 // Track if storage pool refill is currently running
 let isRefillInProgress = false
 
@@ -244,6 +308,9 @@ async function handleMessage (
 
     case MessageType.GET_ACCOUNTS:
         return await handleGetAccounts()
+
+    case MessageType.SEND_TRANSACTION_DAPP:
+        return await handleSendTransactionDapp(message.data, sender)
 
     case MessageType.SIGN_TRANSACTION:
         return await handleSignTransaction(message.data, sender)
@@ -571,65 +638,25 @@ async function handleConnectDapp (
         throw new Error('Wallet is locked. Please unlock your wallet to connect.')
     }
 
-    // Get current network from storage
-    const currentNetwork = await WalletManager.getNetwork()
+    // Check and handle network switching if needed
+    const origin = sender.url || 'Unknown'
+    const networkSwitched = await ensureCorrectNetwork(requestedNetwork, origin)
 
-    // If dApp requested a specific network and it doesn't match, ask user to switch
-    if (requestedNetwork && requestedNetwork !== currentNetwork) {
-        const requestId = Math.random().toString(36)
-        const networkSwitchRequest = {
-            type: 'network-switch' as const,
-            origin: sender.url || 'Unknown',
-            requestId,
-            currentNetwork,
-            requestedNetwork
-        }
-
-        // Store in chrome.storage so popup can access it
-        await chrome.storage.local.set({ pendingApproval: networkSwitchRequest })
-
-        // Open the extension popup
-        await chrome.action.openPopup().catch(() => {
-            console.log('Popup already open or could not be opened')
-        })
-
-        // Wait for user approval
-        try {
-            const approved = await new Promise<{ approved: boolean }>((resolve, reject) => {
-                pendingApprovals.set(requestId, { resolve, reject })
-
-                // Timeout after 5 minutes
-                setTimeout(() => {
-                    if (pendingApprovals.has(requestId)) {
-                        pendingApprovals.delete(requestId)
-                        chrome.storage.local.remove('pendingApproval')
-                        reject(new Error('Network switch request timed out'))
-                    }
-                }, 300000)
-            })
-
-            if (!approved.approved) {
-                return {
-                    success: false,
-                    error: 'User rejected network switch'
-                }
-            }
-
-            // User approved - switch network
-            await WalletManager.setNetwork(requestedNetwork)
-        } catch (error) {
-            return {
-                success: false,
-                error: error instanceof Error ? error.message : 'Network switch failed'
-            }
+    if (!networkSwitched) {
+        return {
+            success: false,
+            error: 'User rejected network switch'
         }
     }
+
+    // Get the current network (after potential switch)
+    const currentNetwork = await WalletManager.getNetwork()
 
     // Create approval request for connection
     const requestId = Math.random().toString(36)
     const approvalRequest = {
         type: 'connect' as const,
-        origin: sender.url || 'Unknown',
+        origin,
         requestId,
         network: requestedNetwork || currentNetwork
     }
@@ -713,6 +740,111 @@ async function handleGetAccounts (): Promise<MessageResponse> {
 }
 
 /**
+ * Send transaction from dApp (requires user approval)
+ */
+async function handleSendTransactionDapp (
+    data: { to: string; amount: string; token?: string; network?: 'test' | 'main' },
+    sender: chrome.runtime.MessageSender
+): Promise<MessageResponse> {
+    // Check if wallet is unlocked
+    const isLocked = await WalletManager.isLocked()
+    if (isLocked) {
+        return {
+            success: false,
+            error: 'Wallet is locked. Please unlock first.'
+        }
+    }
+
+    // Check and handle network switching if needed
+    const origin = sender.url ? new URL(sender.url).origin : 'Unknown'
+    const networkSwitched = await ensureCorrectNetwork(data.network, origin)
+
+    if (!networkSwitched) {
+        return {
+            success: false,
+            error: 'User rejected network switch'
+        }
+    }
+
+    // Use the network that's now active (after potential switch)
+    const network = await WalletManager.getNetwork()
+
+    // If no token specified, use base token
+    if (!data.token) {
+        const config = network === 'main' ? ProductionConfig : StagingConfig
+        data.token = config.BASE_TOKEN
+    }
+
+    // Show approval popup to user
+    const requestId = Math.random().toString(36).substring(2)
+
+    // Store pending approval
+    await chrome.storage.local.set({
+        pendingApproval: {
+            requestId,
+            type: 'sendTransaction',
+            origin,
+            data: {
+                to: data.to,
+                amount: data.amount,
+                token: data.token
+            },
+            network
+        }
+    })
+
+    // Open the extension popup to show approval screen
+    try {
+        await chrome.action.openPopup()
+    } catch (error) {
+        console.log('Could not open popup automatically:', error)
+    }
+
+    // Wait for user approval
+    try {
+        const approved = await new Promise<{ approved: boolean }>((resolve, reject) => {
+            pendingApprovals.set(requestId, { resolve, reject })
+
+            // Timeout after 5 minutes
+            setTimeout(() => {
+                if (pendingApprovals.has(requestId)) {
+                    pendingApprovals.delete(requestId)
+                    chrome.storage.local.remove('pendingApproval')
+                    reject(new Error('Transaction approval timed out'))
+                }
+            }, 300000)
+        })
+
+        if (!approved.approved) {
+            return {
+                success: false,
+                error: 'User rejected the transaction'
+            }
+        }
+
+        // User approved - execute the transaction
+        const result = await WalletManager.sendTransaction({
+            to: data.to,
+            amount: data.amount,
+            token: data.token!
+        })
+
+        return {
+            success: true,
+            data: {
+                hash: result.hash || '',
+                success: true
+            }
+        }
+    } catch (error) {
+        return {
+            success: false,
+            error: error instanceof Error ? error.message : 'Transaction failed'
+        }
+    }
+}
+
+/**
  * Sign transaction from dApp
  */
 async function handleSignTransaction (
@@ -725,9 +857,20 @@ async function handleSignTransaction (
         throw new Error('Wallet is locked. Please unlock first.')
     }
 
+    // Check and handle network switching if needed
+    const requestedNetwork = data.network as 'test' | 'main' | undefined
+    const origin = sender.url ? new URL(sender.url).origin : 'Unknown'
+    const networkSwitched = await ensureCorrectNetwork(requestedNetwork, origin)
+
+    if (!networkSwitched) {
+        return {
+            success: false,
+            error: 'User rejected network switch'
+        }
+    }
+
     // Show approval popup to user
     const requestId = Math.random().toString(36).substring(2)
-    const origin = sender.url ? new URL(sender.url).origin : 'Unknown'
 
     // Store pending approval
     await chrome.storage.local.set({
@@ -791,7 +934,7 @@ async function handleSignTransaction (
  * Handle recover from storage accounts
  */
 async function handleRecoverFromStorage (
-    data: { storageAddresses: string[] },
+    data: { storageAddresses: string[]; network?: 'test' | 'main' },
     sender: chrome.runtime.MessageSender
 ): Promise<MessageResponse> {
     // Check if wallet is unlocked
@@ -800,9 +943,20 @@ async function handleRecoverFromStorage (
         throw new Error('Wallet is locked. Please unlock first.')
     }
 
+    // Check and handle network switching if needed
+    const requestedNetwork = data.network
+    const origin = sender.url ? new URL(sender.url).origin : 'Unknown'
+    const networkSwitched = await ensureCorrectNetwork(requestedNetwork, origin)
+
+    if (!networkSwitched) {
+        return {
+            success: false,
+            error: 'User rejected network switch'
+        }
+    }
+
     // Show approval popup to user
     const requestId = Math.random().toString(36).substring(2)
-    const origin = sender.url ? new URL(sender.url).origin : 'Unknown'
 
     // Store pending approval
     await chrome.storage.local.set({
@@ -825,7 +979,7 @@ async function handleRecoverFromStorage (
     // Wait for approval response
     let approved: boolean
     try {
-        approved = await new Promise<boolean>((resolve, reject) => {
+        const result = await new Promise<{ approved: boolean }>((resolve, reject) => {
             pendingApprovals.set(requestId, { resolve, reject })
 
             // Timeout after 30 minutes
@@ -837,6 +991,7 @@ async function handleRecoverFromStorage (
                 }
             }, 1800000)
         })
+        approved = result.approved
     } catch (error) {
         // Timeout occurred
         return {
@@ -858,18 +1013,46 @@ async function handleRecoverFromStorage (
     const network = await WalletManager.getNetwork()
 
     // Call recoverFromStorageAccounts with requestId for progress tracking
-    const result = await recoverFromStorageAccounts(
-        data.storageAddresses,
-        seed!,
-        network,
-        requestId
-    )
-    await WalletManager.updateActivity()
+    try {
+        const result = await recoverFromStorageAccounts(
+            data.storageAddresses,
+            seed!,
+            network,
+            requestId
+        )
+        await WalletManager.updateActivity()
 
-    return {
-        success: result.success,
-        data: result,
-        error: result.success ? undefined : result.details
+        // Store result for popup to retrieve
+        await chrome.storage.local.set({
+            [`recovery_result_${requestId}`]: {
+                success: true,
+                data: result
+            }
+        })
+
+        // Clean up progress data
+        await chrome.storage.local.remove(`recovery_progress_${requestId}`)
+
+        return {
+            success: true,
+            data: result
+        }
+    } catch (error) {
+        // Store error for popup to retrieve
+        await chrome.storage.local.set({
+            [`recovery_result_${requestId}`]: {
+                success: false,
+                error: error instanceof Error ? error.message : 'Recovery failed'
+            }
+        })
+
+        // Clean up progress data
+        await chrome.storage.local.remove(`recovery_progress_${requestId}`)
+
+        return {
+            success: false,
+            error: error instanceof Error ? error.message : 'Recovery failed'
+        }
     }
 }
 
@@ -886,67 +1069,20 @@ async function handleCreateOrders (
         throw new Error('Wallet is locked. Please unlock first.')
     }
 
-    // Check network requirements
+    // Check and handle network switching if needed
     const requestedNetwork = data.network as 'test' | 'main' | undefined
-    const currentNetwork = await WalletManager.getNetwork()
+    const origin = sender.url ? new URL(sender.url).origin : 'Unknown'
+    const networkSwitched = await ensureCorrectNetwork(requestedNetwork, origin)
 
-    // If a specific network is requested and it differs from current, ask user to switch
-    if (requestedNetwork && requestedNetwork !== currentNetwork) {
-        const networkSwitchRequestId = Math.random().toString(36)
-
-        // Store network switch approval request
-        await chrome.storage.local.set({
-            pendingApproval: {
-                requestId: networkSwitchRequestId,
-                type: 'network-switch',
-                origin: sender.url || 'Unknown',
-                data: {
-                    currentNetwork,
-                    requestedNetwork
-                }
-            }
-        })
-
-        // Open the extension popup
-        await chrome.action.openPopup().catch(() => {
-            console.log('Popup already open or could not be opened')
-        })
-
-        // Wait for user approval
-        try {
-            const approved = await new Promise<{ approved: boolean }>((resolve, reject) => {
-                pendingApprovals.set(networkSwitchRequestId, { resolve, reject })
-
-                // Timeout after 5 minutes
-                setTimeout(() => {
-                    if (pendingApprovals.has(networkSwitchRequestId)) {
-                        pendingApprovals.delete(networkSwitchRequestId)
-                        chrome.storage.local.remove('pendingApproval')
-                        reject(new Error('Network switch request timed out'))
-                    }
-                }, 300000)
-            })
-
-            if (!approved.approved) {
-                return {
-                    success: false,
-                    error: 'User rejected network switch'
-                }
-            }
-
-            // User approved - switch network
-            await WalletManager.setNetwork(requestedNetwork)
-        } catch (error) {
-            return {
-                success: false,
-                error: error instanceof Error ? error.message : 'Network switch failed'
-            }
+    if (!networkSwitched) {
+        return {
+            success: false,
+            error: 'User rejected network switch'
         }
     }
 
     // Show approval popup to user
     const requestId = Math.random().toString(36).substring(2)
-    const origin = sender.url ? new URL(sender.url).origin : 'Unknown'
 
     // Store pending approval
     await chrome.storage.local.set({

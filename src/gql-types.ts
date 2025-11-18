@@ -226,12 +226,12 @@ export type AtomicOrderbookStatsField = {
 export type AtomicPriceTimeSeriesField = {
   __typename?: 'AtomicPriceTimeSeriesField';
   averagePrice: Scalars['Float'];
+  baseVolume: Scalars['String'];
   closePrice: Scalars['Float'];
   maxPrice: Scalars['Float'];
   minPrice: Scalars['Float'];
   openPrice: Scalars['Float'];
   tick: Scalars['DateTime'];
-  tokenVolume: Scalars['String'];
 };
 
 export type AtomicPriceTimeSeriesFiltersField = {
@@ -285,7 +285,9 @@ export type AtomicSwapBlockField = {
 export type AtomicSwapField = {
   __typename?: 'AtomicSwapField';
   buyAmount: Scalars['String'];
-  buyOrderId: Scalars['Int'];
+  /** Fetch the buy order information for this swap */
+  buyOrder?: Maybe<AtomicOrderCreatedField>;
+  buyOrderId?: Maybe<Scalars['Int']>;
   buyToken?: Maybe<ListingField>;
   buyTxId?: Maybe<Scalars['String']>;
   buyerAddress?: Maybe<Scalars['String']>;
@@ -296,7 +298,9 @@ export type AtomicSwapField = {
   makerRebateTxId?: Maybe<Scalars['String']>;
   secondTokenAddress?: Maybe<Scalars['String']>;
   sellAmount: Scalars['String'];
-  sellOrderId: Scalars['Int'];
+  /** Fetch the sell order information for this swap */
+  sellOrder?: Maybe<AtomicOrderCreatedField>;
+  sellOrderId?: Maybe<Scalars['Int']>;
   sellToken?: Maybe<ListingField>;
   sellTxId?: Maybe<Scalars['String']>;
   sellerAddress?: Maybe<Scalars['String']>;

@@ -7,7 +7,7 @@ import * as KeetaNet from '@keetanetwork/keetanet-client'
 import { getStorage, setStorage } from '../core/storage'
 import { createStorageAccount } from './createStorageAccount'
 
-const MIN_POOL_SIZE = 1
+const MIN_POOL_SIZE = 3
 const MAX_POOL_SIZE = 120
 
 /**

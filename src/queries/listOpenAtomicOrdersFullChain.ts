@@ -18,6 +18,7 @@ const LIST_OPEN_ATOMIC_ORDERS_FULL_CHAIN_QUERY = gql`
                 createdAt
                 validUntil
                 unsignedBytes
+                forwardToAddress
             }
         }
     }
@@ -36,6 +37,7 @@ export interface Order {
     createdAt: string
     validUntil: string
     unsignedBytes: string
+    forwardToAddress?: string
 }
 
 /**

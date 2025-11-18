@@ -142,7 +142,7 @@ export const OrdersScreen: React.FC<OrdersScreenProps> = ({ onBack }) => {
                 <Button variant='ghost' size='sm' onClick={onBack}>
                     <ArrowLeft className='w-4 h-4' />
                 </Button>
-                <h1 className='text-xl font-bold'>My Orders</h1>
+                <h1 className='text-xl font-bold'>Expired Orders</h1>
                 <Button
                     variant='ghost'
                     size='sm'
@@ -169,7 +169,7 @@ export const OrdersScreen: React.FC<OrdersScreenProps> = ({ onBack }) => {
                     : orders.length === 0
                         ? (
                             <div className='text-center py-12 text-muted-foreground'>
-                                <p>No open orders found</p>
+                                <p>No expired orders found</p>
                             </div>
                         )
                         : (
@@ -264,26 +264,12 @@ export const OrdersScreen: React.FC<OrdersScreenProps> = ({ onBack }) => {
                                         {/* Expiry Status */}
                                         <div className='flex items-center justify-between'>
                                             <div className='flex items-center gap-2'>
-                                                {status === 'healthy'
-                                                    ? (
-                                                        <CheckCircle2 className='w-4 h-4 text-green-500' />
-                                                    )
-                                                    : (
-                                                        <Clock className='w-4 h-4 text-yellow-500' />
-                                                    )}
+                                                <Clock className='w-4 h-4 text-red-500' />
                                                 <span className='text-xs text-muted-foreground'>
-                                                    {status === 'expiring'
-                                                        ? 'Expiring in'
-                                                        : 'Expires in'}
+                                                    Expired
                                                 </span>
                                             </div>
-                                            <span
-                                                className={`text-xs font-medium ${
-                                                    status === 'expiring'
-                                                        ? 'text-yellow-500'
-                                                        : 'text-muted-foreground'
-                                                }`}
-                                            >
+                                            <span className='text-xs font-medium text-red-500'>
                                                 {timeRemaining}
                                             </span>
                                         </div>

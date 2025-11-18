@@ -1,11 +1,9 @@
 #!/bin/bash
 
 # Package Lightbeam Wallet Chrome Extension
-# Usage: ./package-extension.sh [production|staging]
+# Usage: ./package-extension.sh
 
 set -e
-
-DEPLOYMENT=${1:-production}
 
 echo "🔧 Installing dependencies..."
 yarn install --frozen-lockfile
@@ -13,14 +11,14 @@ yarn install --frozen-lockfile
 echo "📝 Generating GraphQL types..."
 yarn schema
 
-echo "🏗️  Building extension for $DEPLOYMENT..."
-DEPLOYMENT=$DEPLOYMENT yarn build
+echo "🏗️  Building extension..."
+yarn build
 
 echo "📦 Creating ZIP package..."
 PACKAGE_DIR="packages"
 mkdir -p $PACKAGE_DIR
 cd dist
-ZIP_NAME="lightbeam-wallet-${DEPLOYMENT}-$(date +%Y%m%d-%H%M%S).zip"
+ZIP_NAME="lightbeam-wallet-$(date +%Y%m%d-%H%M%S).zip"
 zip -r ../$PACKAGE_DIR/$ZIP_NAME . -x "*.map"
 cd ..
 

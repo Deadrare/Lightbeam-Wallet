@@ -125,7 +125,7 @@ export async function recoverFromStorageAccounts (
             }
         }
 
-        await updateProgress('Finalizing recovery...', 95)
+        await updateProgress('Finalizing recovery...', 100)
 
         // Clean up
         await client.destroy()

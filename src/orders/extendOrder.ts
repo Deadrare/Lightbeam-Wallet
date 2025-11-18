@@ -64,6 +64,7 @@ export async function extendOrder (order: any, network: 'test' | 'main'): Promis
         let receiveAmountAfterFee = 0n
         let sendToken: any = null
         let receiveToken: any = null
+        let forwardAddress: string | undefined
 
         if (originalBlock.operations && Array.isArray(originalBlock.operations)) {
             for (const operation of originalBlock.operations) {
@@ -73,6 +74,10 @@ export async function extendOrder (order: any, network: 'test' | 'main'): Promis
                 } else if (operation.type === 7) { // RECEIVE operation
                     receiveAmountAfterFee = BigInt(operation.amount || 0)
                     receiveToken = operation.token
+                    // Extract forward address if present
+                    if (operation.forward) {
+                        forwardAddress = operation.forward.publicKeyString?.get()
+                    }
                 }
             }
         }
@@ -132,7 +137,7 @@ export async function extendOrder (order: any, network: 'test' | 'main'): Promis
                         sendAmount,
                         receiveAmountAfterFee,
                         previous,
-                        undefined, // No forward address for extensions
+                        forwardAddress, // Use forward address extracted from original block
                         overrideTime
                     )
                 )

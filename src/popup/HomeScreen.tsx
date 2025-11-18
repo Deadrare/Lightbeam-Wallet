@@ -23,7 +23,6 @@ import { SettingsScreen } from './SettingsScreen'
 import { OrdersScreen } from './OrdersScreen'
 import { StagingConfig, ProductionConfig } from '@/config'
 import { listingsBulkByCollection } from '@/queries/listingsBulkByCollection'
-import { listingDetailBySlug } from '@/queries/listingDetailBySlug'
 
 type Screen = 'home' | 'receive' | 'settings' | 'orders'
 
@@ -36,6 +35,70 @@ interface TokenWithMetadata extends TokenBalance {
     name?: string
     imageUrl?: string
     decimals?: number
+}
+
+interface OnChainTokenMetadata {
+    token: string
+    name: string
+    description?: string
+    decimals: number
+}
+
+/**
+ * Fetch token metadata from Keeta blockchain
+ */
+async function fetchTokenMetadataFromKeeta (
+    tokenAddress: string,
+    networkConfig: typeof StagingConfig | typeof ProductionConfig
+): Promise<OnChainTokenMetadata | null> {
+    try {
+        const response = await fetch(`${networkConfig.KEETA_API_URL}/node/ledger/account/${tokenAddress}`)
+        if (!response.ok) {
+            return null
+        }
+        const data = await response.json()
+
+        // Decode the metadata field if it exists
+        let decimalPlaces = 9 // Default to 9 decimals
+        if (data.info?.metadata) {
+            try {
+                const decodedMetadata = JSON.parse(atob(data.info.metadata))
+                decimalPlaces = decodedMetadata.decimalPlaces || 0
+            } catch (e) {
+                console.error('Failed to decode metadata for', tokenAddress, e)
+            }
+        }
+
+        return {
+            token: tokenAddress,
+            name: data.info?.name || tokenAddress.slice(0, 10),
+            description: data.info?.description,
+            decimals: decimalPlaces
+        }
+    } catch (error) {
+        console.error('Failed to fetch metadata for', tokenAddress, error)
+        return null
+    }
+}
+
+const convertHexToDecimal = (balance: string, decimals?: number): string => {
+    try {
+        const balanceHex = balance.startsWith('0x') ? balance.slice(2) : balance
+        const balanceBigInt = BigInt('0x' + balanceHex)
+        const tokenDecimals = decimals ?? 9 // KTA uses 9 decimals by default
+        const divisor = 10n ** BigInt(tokenDecimals)
+        const wholePart = balanceBigInt / divisor
+        const fractionalPart = balanceBigInt % divisor
+        const fractionalStr = fractionalPart.toString().padStart(tokenDecimals, '0')
+        const trimmedFractional = fractionalStr.replace(/0+$/, '')
+
+        if (trimmedFractional) {
+            return `${wholePart.toString()}.${trimmedFractional}`
+        }
+        return wholePart.toString()
+    } catch {
+        return '0'
+    }
 }
 
 export const HomeScreen: React.FC = () => {
@@ -63,13 +126,21 @@ export const HomeScreen: React.FC = () => {
 
         chrome.storage.onChanged.addListener(handleStorageChange)
 
+        // Auto-refresh every 10 seconds
+        const refreshInterval = setInterval(() => {
+            loadWalletData(false) // Pass false to skip showing loading state
+        }, 10000)
+
         return () => {
             chrome.storage.onChanged.removeListener(handleStorageChange)
+            clearInterval(refreshInterval)
         }
     }, [])
 
-    const loadWalletData = async () => {
-        setLoading(true)
+    const loadWalletData = async (showLoading = true) => {
+        if (showLoading) {
+            setLoading(true)
+        }
         try {
             const [addressData, balanceData, networkData] = await Promise.all([
                 sendMessage<{ address: string }>(MessageType.GET_ADDRESS),
@@ -81,18 +152,20 @@ export const HomeScreen: React.FC = () => {
             setBalance(balanceData.balance)
             setNetwork(networkData.network)
 
-            // Fetch KTA metadata from GraphQL
+            // Fetch KTA metadata from Keeta blockchain
             try {
-                const ktaData = await listingDetailBySlug('KTA')
-                if (ktaData) {
+                const networkConfig = networkData.network === 'main' ? ProductionConfig : StagingConfig
+                const ktaMetadata = await fetchTokenMetadataFromKeeta(networkConfig.BASE_TOKEN, networkConfig)
+
+                if (ktaMetadata) {
                     setKtaMetadata({
-                        token: ktaData.collectionTicker,
-                        slug: ktaData.slug,
-                        name: ktaData.name,
-                        decimals: ktaData.decimals ?? 9
+                        token: ktaMetadata.token,
+                        slug: 'KTA',
+                        name: ktaMetadata.name,
+                        decimals: ktaMetadata.decimals
                     })
                 } else {
-                    console.error('KTA listing not found in GraphQL response')
+                    console.error('Failed to fetch KTA metadata from Keeta')
                 }
             } catch (error) {
                 console.error('Failed to fetch KTA metadata:', error)
@@ -103,7 +176,9 @@ export const HomeScreen: React.FC = () => {
         } catch (err) {
             console.error('Failed to load wallet data:', err)
         } finally {
-            setLoading(false)
+            if (showLoading) {
+                setLoading(false)
+            }
         }
     }
 
@@ -120,9 +195,18 @@ export const HomeScreen: React.FC = () => {
             const data = await response.json()
             const balances = data.balances || []
 
-            // Fetch metadata for tokens using GraphQL
+            // Ensure base token is always included, even with zero balance
+            const baseTokenInBalances = balances.find((b: TokenBalance) => b.token === networkConfig.BASE_TOKEN)
+            if (!baseTokenInBalances) {
+                balances.push({
+                    token: networkConfig.BASE_TOKEN,
+                    balance: '0x0'
+                })
+            }
+
+            // Fetch metadata for tokens
             if (balances.length > 0) {
-                const tokensWithMetadata = await fetchTokenMetadata(balances)
+                const tokensWithMetadata = await fetchTokenMetadata(balances, net)
                 setTokenBalances(tokensWithMetadata)
             } else {
                 setTokenBalances([])
@@ -133,18 +217,44 @@ export const HomeScreen: React.FC = () => {
         }
     }
 
-    const fetchTokenMetadata = async (tokens: TokenBalance[]): Promise<TokenWithMetadata[]> => {
+    const fetchTokenMetadata = async (tokens: TokenBalance[], net: 'test' | 'main'): Promise<TokenWithMetadata[]> => {
         try {
+            const networkConfig = net === 'main' ? ProductionConfig : StagingConfig
             const tokenIds = tokens.map(t => t.token)
-            const metadataMap = await listingsBulkByCollection(tokenIds)
 
-            // Merge balances with metadata
-            return tokens.map(token => ({
-                ...token,
-                name: metadataMap.get(token.token)?.name,
-                imageUrl: metadataMap.get(token.token)?.imageUrl,
-                decimals: metadataMap.get(token.token)?.decimals
-            }))
+            // Fetch on-chain metadata from Keeta for each token
+            const metadataPromises = tokenIds.map(tokenAddress =>
+                fetchTokenMetadataFromKeeta(tokenAddress, networkConfig)
+            )
+
+            const onChainMetadata = await Promise.all(metadataPromises)
+            const metadataMap = new Map(
+                onChainMetadata
+                    .filter((m): m is NonNullable<typeof m> => m !== null)
+                    .map(m => [m.token, m])
+            )
+
+            // Fetch images from GraphQL (only field we need from there)
+            let imageMap = new Map<string, string>()
+            try {
+                const graphqlMetadata = await listingsBulkByCollection(tokenIds)
+                imageMap = new Map(
+                    Array.from(graphqlMetadata.entries()).map(([token, data]) => [token, data.imageUrl])
+                )
+            } catch (error) {
+                console.error('Error fetching token images from GraphQL:', error)
+            }
+
+            // Merge balances with on-chain metadata and GraphQL images
+            return tokens.map(token => {
+                const metadata = metadataMap.get(token.token)
+                return {
+                    ...token,
+                    name: metadata?.name,
+                    imageUrl: imageMap.get(token.token),
+                    decimals: metadata?.decimals
+                }
+            })
         } catch (error) {
             console.error('Error fetching token metadata:', error)
             // Return tokens without metadata on error
@@ -335,24 +445,4 @@ export const HomeScreen: React.FC = () => {
             </Drawer>
         </div>
     )
-}
-
-const convertHexToDecimal = (balance: string, decimals?: number): string => {
-    try {
-        const balanceHex = balance.startsWith('0x') ? balance.slice(2) : balance
-        const balanceBigInt = BigInt('0x' + balanceHex)
-        const tokenDecimals = decimals ?? 9 // KTA uses 9 decimals by default
-        const divisor = 10n ** BigInt(tokenDecimals)
-        const wholePart = balanceBigInt / divisor
-        const fractionalPart = balanceBigInt % divisor
-        const fractionalStr = fractionalPart.toString().padStart(tokenDecimals, '0')
-        const trimmedFractional = fractionalStr.replace(/0+$/, '')
-
-        if (trimmedFractional) {
-            return `${wholePart.toString()}.${trimmedFractional}`
-        }
-        return wholePart.toString()
-    } catch {
-        return '0'
-    }
 }
